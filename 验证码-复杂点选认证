@@ -1,0 +1,110 @@
+# 使用提醒：
+# 1. xbot包提供软件自动化、数据表格、Excel、日志、AI等功能
+# 2. package包提供访问当前应用数据的功能，如获取元素、访问全局变量、获取资源文件等功
+# 3. 当此模块作为流程独立运行时执行main函数
+# 4. 可视化流程中可以通过"调用模块"的指令使用此模块
+#ddddocr
+#opencv-python
+#requests
+
+import xbot
+from xbot import print, sleep
+from . import package
+from .package import variables as glv
+import ddddocr
+import cv2
+import numpy as np
+from PIL import Image
+import requests
+from io import BytesIO
+import os
+import base64  # 新增：处理base64编码
+
+# 全局初始化检测器和识别器 (避免重复初始化，提升性能)
+det = ddddocr.DdddOcr(det=True, ocr=False, show_ad=False)
+ocr = ddddocr.DdddOcr(det=False, ocr=True, show_ad=False)
+
+def get_captcha_click_coords(image_input, target_word, input_type="auto", s:
+    try:
+        # 1. 根据输入类型处理图片
+        img_bytes = None
+        img = None
+
+        if input_type == "auto":
+            # 自动识别输入类型
+            if image_input.startswith(('http://', 'https://')):
+                input_type = "url"
+            elif image_input.startswith(('data:image/', 'base64,')) or len(:
+                # 判定为base64 (带前缀 或 长字符串)
+                input_type = "base64"
+            else:
+                # 判定为本地路径
+                input_type = "local"
+
+        # 处理不同输入类型
+        if input_type == "url":
+            # 在线链接
+            response = requests.get(image_input, timeout=10)
+            response.raise_for_status()
+            img_bytes = response.content
+            nparr = np.frombuffer(img_bytes, np.uint8)
+            img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+
+        elif input_type == "local":
+            # 本地路径
+            if not os.path.exists(image_input):
+                raise FileNotFoundError(f"本地图片不存在: {image_input}")
+            with open(image_input, "rb") as f:
+                img_bytes = f.read()
+            img = cv2.imread(image_input)
+
+        elif input_type == "base64":
+            # Base64字符串
+            # 移除可能的前缀 (data:image/png;base64,)
+            if "," in image_input:
+                image_input = image_input.split(",")[-1]
+            # 解码base64为字节流
+            img_bytes = base64.b64decode(image_input)
+            # 转为cv格式
+            nparr = np.frombuffer(img_bytes, np.uint8)
+            img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+
+        # 校验图片是否解码成功
+        if img is None:
+            raise ValueError(f"{input_type}类型图片解码失败，请检查输入内容是否
+
+        # 2. 转换图片格式 (供裁剪使用)
+        img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        pil_img = Image.fromarray(img_rgb)
+
+        # 3. 检测文字区域
+        boxes = det.detection(img_bytes)
+        print(f"检测到 {len(boxes)} 个文字区域")
+
+        # 4. 识别每个区域的文字并匹配目标
+        click_points = {}
+        for i, (x1, y1, x2, y2) in enumerate(boxes):
+            # 裁剪文字区域
+            crop = pil_img.crop((x1, y1, x2, y2))
+            # 转为字节流供OCR识别
+            buf = BytesIO()
+            crop.save(buf, format="JPEG")
+            crop_bytes = buf.getvalue()
+            # 识别文字
+            text = ocr.classification(crop_bytes).strip()
+            print(f"区域 {i+1}: 坐标({x1},{y1},{x2},{y2}) -> 文字: {text}")
+
+            # 匹配目标文字，计算中心坐标
+            if text in target_word:
+                center_x = (x1 + x2) // 2
+                center_y = (y1 + y2) // 2
+                click_points[text] = [center_x,center_y]
+
+        return click_points
+
+    except Exception as e:
+        print(f"验证码识别失败: {str(e)}")
+        raise  # 抛出异常，便于上层调用捕获
+
+def main(args):
+    pass
