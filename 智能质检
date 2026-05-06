@@ -1,0 +1,572 @@
+import re
+import pandas as pd
+import tkinter as tk
+from tkinter import filedialog
+import os
+import sys
+
+class CustomerServiceQualityInspection:
+    def __init__(self):
+        # ===== 质检点规则=====
+        self.quality_rules = {
+            # ===== 客服承诺类（C列）=====
+            "承诺发货时间": [r"发货时间.*?\d+[天日小时分钟]", r"\d+[天日小时分钟].*?发货", r"什么时候发", r"多久发"],
+            "承诺赠品": [r"(?:我们|小店|商家|给您|为您|帮您|可以|能够|支持).*?(?:赠送|送|赠).*?(?:礼品|赠品|礼物|运费险)",
+                        r"(?:赠送|送|赠)您.{0,3}(?:礼品|赠品|礼物|运费险)",
+                        r"(?:有|包含|附赠).{0,3}(?:赠品|礼品|礼物|运费险)(?:给您|为您|的)"],
+            "承诺补偿金额": [
+                r"(?:补偿|赔偿|赔|退|补)[^运费险理赔赔付自动]{0,10}\d+[元块](?!.*?(?:运费险|理赔|赔付|自动抵扣|预估))",
+                r"(?:给您|为您|承诺|答应|我们|申请).*?\d+[元块][^运费险]{0,5}(?:补偿|赔偿|赔|退)",
+                r"补偿\d+[元块]|赔偿\d+[元块]|退\d+[元块]款|补\d+[元块]差价"
+            ],
+            "承诺承担退/换货运费": [
+                r"(?:由|是|为)(?:我们|小店|商家|我方|我司|给您|为您)[^运险]{0,8}(?:承担|负担|出|包)[^运险]{0,8}运[费险]",
+                r"(?:承担|负担|出|包)[^运险自动赔付]{0,10}退[^运险自动赔付]{0,10}运[费险](?!.*?(?:险|理赔|自动|抵扣))",
+                r"退[^运险]{0,5}运[费险].*?(?:由|是|为).{0,5}(?:我们|小店|商家|我方)",
+                r"(?!.*?(?:运费险|自动|理赔|赔付)).*?退.*?运费.*?我们承担"
+            ],
+            "承诺同意退货退款": [r"同意.*?退货退款", r"退货退款.*?同意", r"可以退", r"可以退货"],
+            "承诺同意换货申请": [
+                r"(?<!请问)(?<!能否)(?<!咨询)(?:同意|支持|批准|通过)(?!.*?(?:吗|\?)).*?换货",
+                r"(?:可以|能够)换货(?!.*?(?:吗|？|条件|要求|不|没|无法))[，。！；]",
+                r"(?:我们|小店|商家|给您|为您|帮您).*?(?:同意换货|支持换货|帮您换)",
+                r"换货申请.*?(?:已|已经|获|获准|审核).*?(?:同意|批准|通过)",
+                r"(?<!请问)(?<!能否)(?<!能不能)(?<!咨询)(?:换货|给您换|支持换货)(?!.*?(?:吗|？|不))"
+            ],
+            "承诺补寄": [r"补寄", r"补发", r"再寄", r"重发"],
+            "承诺物流方式": [r"给您(.*?)[顺丰中通圆通韵达申通德邦京东物流极兔]", r"为您(.*?)[顺丰中通圆通韵达申通德邦京东物流极兔]", r"安排(.*?)[顺丰中通圆通韵达申通德邦京东物流极兔]", r"申请(.*?)[顺丰中通圆通韵达申通德邦京东物流极兔]", r"发[顺丰中通圆通韵达申通德邦京东物流极兔]", r"使用[顺丰中通圆通韵达申通德邦京东物流极兔]"],
+            "说明物流方式": [r"默认发[顺丰中通圆通韵达申通德邦京东物流极兔]", r"发什么快递", r"物流方式.*?[顺丰中通圆通韵达申通德邦京东物流极兔]", r"[顺丰中通圆通韵达申通德邦京东物流极兔].*?物流方式"],
+            "承诺发货地": [r"从.*?发货", r"发货地.*?[城市地名]", r"[城市地名].*?发货"],
+
+            # ===== 顾客反馈类（B列）=====
+            "反馈商品质量有问题": [
+                r"(?:收到|买的|东西|商品|产品|货).{0,8}(?:质量有问题|质量差|质量不好|坏了|破损|损坏|漏液|烂了|碎了|变形| defective|次品|不能用|没效果|不对劲)",
+                r"^(?:质量差|质量不好|质量有问题|质量很差|质量太差|垃圾质量|这质量)",
+                r"(?:用|涂|敷|贴|擦|抹).{0,8}(?:过敏|烂脸|长痘|泛红|发红|刺痛|疼|痛|不舒服|红肿|红疹|红点点|疙瘩|发痒|瘙痒|灼热|烧痛|刺激)",
+                r"收到.{0,8}(?:破损|漏液|损坏|烂了|碎了|变形|坏的|瑕疵|破的|不行)",
+                r"(?:这|东西|商品|产品|货).{0,5}(?:有问题|不对劲|不对|货不对板|是坏的|质量不行|不行啊|垃圾)",
+                r"(?:质量问题|商品问题|产品问题|这情况|这样子).{0,5}(?:怎么办|处理|解决|退货|退款|赔偿|投诉|差评)"
+            ],
+            "反馈少件/漏发": [
+                r"(?:收到|打开|包裹|盒子里|快递|里面|订单).{0,10}(?:少发|漏发|没发|少|缺|漏|仅有|只有|就一个).{0,5}(?:件|个|盒|片|只|瓶|数量|东西|货|产品)",
+                r"(?:怎么|为什么|啥|啥意思|请问).{0,5}(?:只有|就|仅|才).{0,5}(?:一个|两只|三片|一盒|一件|没有|零|数量不对|数量少|缺|漏)",
+                r"(?:订购|下单|买|拍了|拍了几个).{0,5}(?:\d+|[两三四五六七八九几]).{0,3}[个盒片只件瓶].{0,5}(?:只|就|仅|才|结果|实际).{0,3}(?:收到|到|有).{0,3}(?:[一二三四五]|没有|零|一半|数量不对)",
+                r"(?:数量不对|数量少了|少了一个|缺了一个|漏了一个|就发一瓶|本该有|应该有但没|不够数|数量不足|少货|缺货)",
+            ],
+            "反馈安全事故": [
+                r"(?:用|涂|敷|贴|擦|抹|使用|擦了|用了|涂了|抹上|涂上之后?).{0,8}(?:过敏|烂脸|长痘|泛红|发红|刺痛|疼|痛|不舒服|红肿|红疹|疙瘩|发痒|瘙痒|灼热|烧痛|刺激).{0,5}(?:了|之后|后).{0,3}(?:怎么办|处理|解决|退货|退款|严重|很|特别|非常|啊|呢|吗)",
+                r"(?:脸|皮肤|眼部|脸上|身上|手臂|额头|脸颊|眼周|眼睛).{0,3}(?:过敏|泛红|刺痛|疼|不舒服|痒|灼热|长痘|红疹|起皮|烂).{0,5}(?:了|严重|怎么办|处理|解决|退货|退款|投诉)",
+                r"^(?:这东西|这个|用了之后|涂了之后|擦了后|抹完|敷完).{0,5}(?:过敏|烂脸|刺痛|红肿|红疹|不舒服|长痘).{0,3}(?:严重|很|特别|非常|怎么办|不敢再用|要投诉)",
+            ],
+            "商品不喜欢/不合适": [r"不想要了", r"不想要", r"不喜欢", r"不合适", r"不满意", r"效果不好", r"没什么效果", r"不想要了"],
+            "质疑被欺骗": [r"假货", r"骗人", r"欺骗", r"虚假", r"仿冒", r"假的", r"不是正品", r"骗子"],
+            "买家反馈发错货": [r"发错", r"错发", r"不是这个", r"不对", r"发错了", r"货不对", r"寄错了", r"发的不是我"],
+            "投诉举报": [r"投诉", r"举报", r"315", r"工商", r"消协", r"维权"],
+            "反馈差评": [r"差评", r"给差评", r"打差评", r"给差评了", r"差评了", r"要差评"],
+        }
+
+    def extract_dialogues_from_columns(self, session_text, customer_text, service_text):
+        """从A/B/C三列提取对话，B列=顾客，C列=客服"""
+        dialogues = []
+
+        # 处理B列（顾客内容）
+        if customer_text and not pd.isna(customer_text):
+            customer_str = str(customer_text).strip()
+            # 清理图片、表情、URL
+            customer_str = re.sub(r"\[IMG\].*?\[/IMG\]", "", customer_str)
+            customer_str = re.sub(r"\[表情\].*?\[/表情\]", "", customer_str)
+            customer_str = re.sub(r"http[s]?://\S+", "", customer_str)
+            if len(customer_str) > 1:
+                # 按行分割，每行都是顾客的一句话
+                for line in re.split(r"[\r\n]+", customer_str):
+                    line = line.strip()
+                    if line and len(line) > 1:
+                        dialogues.append(("顾客", line))
+
+        # 处理C列（客服内容）
+        if service_text and not pd.isna(service_text):
+            service_str = str(service_text).strip()
+            service_str = re.sub(r"\[IMG\].*?\[/IMG\]", "", service_str)
+            service_str = re.sub(r"\[表情\].*?\[/表情\]", "", service_str)
+            service_str = re.sub(r"http[s]?://\S+", "", service_str)
+            if len(service_str) > 1:
+                for line in re.split(r"[\r\n]+", service_str):
+                    line = line.strip()
+                    if line and len(line) > 1:
+                        dialogues.append(("客服", line))
+
+        # 如果B/C列为空，尝试从A列解析（降级兼容）
+        if not dialogues and session_text and not pd.isna(session_text):
+            return self._extract_dialogues_from_session(str(session_text))
+
+        return dialogues
+
+    def _extract_dialogues_from_session(self, session_text):
+        """兼容：从A列解析对话（带发送者格式）"""
+        if not session_text:
+            return []
+
+        session_str = str(session_text)
+        session_str = re.sub(r"\[IMG\].*?\[/IMG\]", "", session_str)
+        session_str = re.sub(r"\[表情\].*?\[/表情\]", "", session_str)
+        session_str = re.sub(r"http[s]?://\S+", "", session_str)
+
+        lines = re.split(r"[\r\n]+", session_str)
+        dialogues = []
+
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            if any(mark in line for mark in ["系统消息", "机器人发送", "智能客服", "本消息由系统发送"]):
+                continue
+            if re.match(r"^\d{1,2}:\d{2}:\d{2}$", line):
+                continue
+
+            match = re.match(r"^(.+?)[：:](.+)$", line)
+            if match:
+                sender = match.group(1).strip()
+                content = match.group(2).strip()
+                # 判断身份
+                if re.search(r"客服|旗舰店|专卖店|专营店|官方店|导购", sender):
+                    role = "客服"
+                elif re.search(r"顾客|买家|用户|会员|消费者", sender):
+                    role = "顾客"
+                else:
+                    # 根据内容推断
+                    role = "客服" if re.match(r"^亲[，,]", content) or any(kw in content for kw in ["小店", "我们支持", "给您", "为您", "补偿"]) else "顾客"
+                dialogues.append((role, content))
+
+        return dialogues
+
+    def check_quality_points(self, session_text, customer_text, service_text):
+        """基于B/C列的精准质检"""
+        if (not session_text or pd.isna(session_text)) and \
+           (not customer_text or pd.isna(customer_text)) and \
+           (not service_text or pd.isna(service_text)):
+            return "", ""
+
+        hit_points = set()
+        relevant_segments = []
+        dialogues = self.extract_dialogues_from_columns(session_text, customer_text, service_text)
+
+        if not dialogues:
+            return "", ""
+
+        # 检查质检点
+        for i, (role, content) in enumerate(dialogues):
+            for point_name, patterns in self.quality_rules.items():
+                # 客服承诺类 -> 只检查客服(C列)
+                if point_name.startswith(("承诺", "说明", "疑似")):
+                    if role != "客服":
+                        continue
+                # 顾客反馈类 -> 只检查顾客(B列)
+                else:
+                    if role != "顾客":
+                        continue
+
+                # 正则匹配
+                for pattern in patterns:
+                    if re.search(pattern, content, re.IGNORECASE):
+                        hit_points.add(point_name)
+
+                        # 提取上下文（前后各1句）
+                        context = []
+                        if i > 0:
+                            context.append(f"{dialogues[i-1][0]}: {dialogues[i-1][1]}")
+                        context.append(f"{role}: {content}")
+                        if i < len(dialogues) - 1:
+                            context.append(f"{dialogues[i+1][0]}: {dialogues[i+1][1]}")
+
+                        segment = "\n".join(context)
+                        if len(segment) > 200:
+                            segment = segment[:197] + "..."
+                        relevant_segments.append(f"[{point_name}]: {segment}")
+                        break
+
+        # 排除逻辑（基于A列判断）
+        session_str = str(session_text) if session_text else ""
+        is_robot = "智能客服发送" in session_str or "机器人发送" in session_str
+        has_human_service = any(role == "客服" for role, _ in dialogues)
+
+        robot_excluded_points = [
+            "承诺发货时间", "承诺赠品", "承诺补偿金额",
+            "承诺承担退/换货运费", "承诺同意退货退款", 
+            "承诺同意换货申请", "承诺补寄"
+        ]
+
+        if is_robot and not has_human_service:
+            hit_points = {p for p in hit_points if p not in robot_excluded_points}
+            relevant_segments = [
+                seg for seg in relevant_segments 
+                if not any(f"[{p}]:" in seg for p in robot_excluded_points)
+            ]
+
+        return ",".join(hit_points) if hit_points else "", "\n\n".join(relevant_segments) if relevant_segments else ""
+
+    def evaluate_chat_record(self, session_text, customer_text, service_text, quality_points):
+        """基于B/C列评估聊天记录"""
+        if (not session_text or pd.isna(session_text)) and \
+           (not customer_text or pd.isna(customer_text)) and \
+           (not service_text or pd.isna(service_text)):
+            return ""
+
+        deduction_items = set()
+
+        # 优先使用C列（客服内容）进行评估
+        service_str = str(service_text) if service_text else ""
+        customer_str = str(customer_text) if customer_text else ""
+        session_str = str(session_text) if session_text else ""
+
+        # 合并客服所有发言为列表
+        service_lines = [line.strip() for line in re.split(r"[\r\n]+", service_str) if line.strip()]
+        all_lines = service_lines + [line.strip() for line in re.split(r"[\r\n]+", session_str) if line.strip()]
+
+        # ========== 服务质量类 ==========
+        # 1. 机械化截图
+        if re.search(r"\[IMG\]", service_str):
+            has_explanation = False
+            for line in service_lines:
+                if "[IMG]" in line:
+                    clean = re.sub(r"\[IMG\].*?\[/IMG\]", "", line).strip()
+                    if len(clean) > 5:
+                        has_explanation = True
+                        break
+            if not has_explanation:
+                deduction_items.add("【机械化截图】-1")
+
+        # 2. 机械化推荐
+        if re.search(r"http[s]?://", service_str):
+            has_explanation = False
+            for line in service_lines:
+                if re.search(r"http[s]?://", line):
+                    clean = re.sub(r"http[s]?://\S+", "", line).strip()
+                    if len(clean) > 5:
+                        has_explanation = True
+                        break
+            if not has_explanation:
+                deduction_items.add("【机械化推荐】-1")
+
+        # 3. 重复快捷（检查客服连续发言是否重复）
+        for i in range(len(service_lines) - 1):
+            if service_lines[i] == service_lines[i + 1] and len(service_lines[i]) > 2:
+                deduction_items.add("【重复快捷】-1")
+                break
+
+        # 4. 服务态度（冷漠回复）- 只检查客服短回复
+        cold_words = {"嗯", "哦", "啊", "哈", "在", "有", "没", "好", "嗯呢", "好的", "呀", "可以"}
+        for line in service_lines:
+            if line in cold_words and len(line) <= 3:
+                deduction_items.add("【服务态度】-1")
+                break
+
+        # 7. 一问一答（客服回复过短）
+        short_reply_count = sum(1 for line in service_lines if len(line) < 10)
+        if short_reply_count >= 3:
+            deduction_items.add("【一问一答】-1")
+
+        # 8. 未打消疑虑
+        doubt_words = ["疑惑", "疑问", "不明白", "不太懂", "为什么"]
+        customer_lines = [line.strip() for line in re.split(r"[\r\n]+", customer_str) if line.strip()]
+        for i, line in enumerate(customer_lines):
+            if any(word in line for word in doubt_words):
+                # 检查后续客服是否有解释
+                has_explanation = False
+                # 简化：只要客服后续有"因为/所以/解释"即可
+                for s_line in service_lines:
+                    if any(exp in s_line for exp in ["因为", "所以", "解释", "说明"]):
+                        has_explanation = True
+                        break
+                if not has_explanation:
+                    deduction_items.add("【未打消疑虑】-1")
+                    break
+
+        # 9. 拒绝说明
+        refuse_words = {"不行", "不可以", "不能", "不支持", "没办法"}
+        for line in service_lines:
+            if any(word in line for word in refuse_words):
+                if not any(exp in line for exp in ["因为", "由于", "原因", "规定"]):
+                    deduction_items.add("【拒绝说明】-1")
+                    break
+
+        # 10. 等待无后续
+        if service_lines and ("稍等" in service_lines[-1] or "稍候" in service_lines[-1]):
+            deduction_items.add("【等待无后续】-1")
+
+        # 11. 禁用词
+        banned_words = ["微信", "QQ", "淘宝", "拼多多", "pdd", "加我", "私聊", "最", "第一", "顶级"]
+        for line in service_lines:
+            if any(word in line for word in banned_words):
+                deduction_items.add("【禁用词】-1")
+                break
+
+        # 12. 漏改错改
+        if re.search(r"改地址|修改地址|换快递", session_str, re.IGNORECASE):
+            if not re.search(r"已修改|已备注|改好了", session_str, re.IGNORECASE):
+                deduction_items.add("【待核实漏改错改】-1")
+
+        # 14. 转接同组
+        if re.search(r"转接|转后台|转同事|换人", session_str, re.IGNORECASE):
+            deduction_items.add("【转接同组】-1")
+
+        # 17. 未挽留客户
+        if re.search(r"申请退款|拒收", customer_str, re.IGNORECASE):
+            if re.search(r"不喜欢就退|没办法|不要就拒收", service_str, re.IGNORECASE):
+                deduction_items.add("【未挽留客户】-3")
+
+        # 18. 违背承诺
+        if any(p in quality_points for p in ["承诺发货时间", "承诺赠品", "承诺补偿金额"]):
+            if re.search(r"承诺.*没做到|答应.*没有", session_str, re.IGNORECASE):
+                deduction_items.add("【违背承诺】-3")
+
+        # 19. 解释处理问题
+        if "反馈商品质量有问题" in quality_points:
+            if re.search(r"矛盾升级|投诉|差评", session_str, re.IGNORECASE):
+                deduction_items.add("【解释处理问题】-5")
+
+        # 21. 严重服务态度问题
+        severe_words = ["所以呢", "什么呢", "是吗", "为什么", "难道", "可笑", "无聊", "太过分", "可真行"]
+        for line in service_lines:
+            if any(word in line for word in severe_words):
+                deduction_items.add("【严重服务态度问题】-5或-10")
+                break
+
+        # ========== 售后服务类 ==========
+        # 1. 处理不当
+        if re.search(r"七天无理由.*运费|不喜欢.*运费", session_str, re.IGNORECASE):
+            if "质量" not in session_str:
+                deduction_items.add("【处理不当】-1")
+
+        # 5. 沟通不到位
+        if re.search(r"七天无理由.*运费", session_str, re.IGNORECASE):
+            deduction_items.add("【沟通不到位】-3")
+
+        # 7. 紧急订单
+        if any(risk in quality_points for risk in ["投诉到平台", "投诉到监管"]):
+            if not re.search(r"反馈|报备|紧急", service_str, re.IGNORECASE):
+                deduction_items.add("【紧急订单】-3")
+
+        # 8. 投诉差评介入
+        if "投诉举报" in quality_points or "反馈差评" in quality_points:
+            deduction_items.add("【投诉差评介入】-5")
+
+        # 9. 处理态度
+        if any(q in quality_points for q in ["反馈商品质量有问题", "反馈客服服务态度差"]):
+            if not re.search(r"安抚|抱歉|对不起|理解", service_str, re.IGNORECASE):
+                deduction_items.add("【处理态度】-5或-10")
+
+        # ========== 产品类 ==========
+        # 1. 回复错误
+        if "反馈商品质量有问题" in quality_points:
+            if re.search(r"已下单取消|拒收|退货差评", session_str, re.IGNORECASE):
+                deduction_items.add("【回复错误】-3")
+
+        # 2. 缺乏专业知识
+        if "质疑被欺骗" in quality_points or re.search(r"假货|骗人|仿冒", customer_str, re.IGNORECASE):
+            deduction_items.add("【缺乏专业知识】-3")
+
+        return "\n".join(sorted(deduction_items)) if deduction_items else ""
+
+    def identify_roles(self, session_text):
+        """从A列识别客服名称（用于记录）"""
+        if not session_text or pd.isna(session_text):
+            return "未知"
+
+        session_str = str(session_text)
+        customer_service_names = set()
+
+        # 识别店铺名称
+        shop_patterns = [r"(.+?旗舰店)", r"(.+?专卖店)", r"(.+?专营店)", r"(.+?官方店)"]
+        for pattern in shop_patterns:
+            matches = re.findall(pattern, session_str)
+            customer_service_names.update(matches)
+
+        # 平台固定前缀
+        platform_patterns = {
+            "京东": r"客服-([^：:]+)",
+            "抖音": r"商家客服-([^：:]+)",
+            "快手": r"客服-([^：:]+)",
+            "拼多多": r"平台客服-([^：:]+)",
+            "淘宝/天猫": r"客服-([^：:]+)"
+        }
+        for pattern in platform_patterns.values():
+            matches = re.findall(pattern, session_str)
+            customer_service_names.update(matches)
+
+        return ",".join(customer_service_names) if customer_service_names else "未知"
+
+    def process_file(self, file_path, chat_col="A", customer_col="B", service_col="C"):
+        """处理Excel文件，默认A=聊天记录, B=顾客内容, C=客服内容"""
+        try:
+            print(f"正在读取文件：{file_path}")
+            try:
+                df = pd.read_excel(file_path, engine="openpyxl")
+            except:
+                print("尝试使用xlrd引擎...")
+                df = pd.read_excel(file_path, engine="xlrd")
+
+            print(f"文件读取成功，共{len(df)}行数据，列名：{list(df.columns)}")
+
+            # 列名映射：支持A/B/C列头或传入具体列名
+            # 如果传入的是字母，转换为索引
+            def col_letter_to_name(letter):
+                idx = ord(letter.upper()) - ord("A")
+                if idx < len(df.columns):
+                    return df.columns[idx]
+                return None
+
+            chat_col_name = col_letter_to_name(chat_col) if len(chat_col) == 1 and chat_col.isalpha() else chat_col
+            customer_col_name = col_letter_to_name(customer_col) if len(customer_col) == 1 and customer_col.isalpha() else customer_col
+            service_col_name = col_letter_to_name(service_col) if len(service_col) == 1 and service_col.isalpha() else service_col
+
+            # 验证列存在
+            for col_name, label in [(chat_col_name, "聊天记录(A)"), (customer_col_name, "顾客内容(B)"), (service_col_name, "客服内容(C)")]:
+                if col_name not in df.columns:
+                    available = ", ".join(df.columns)
+                    raise ValueError(f"找不到{label}列 '{col_name}'。可用列：{available}")
+
+            print(f"使用列：聊天记录='{chat_col_name}', 顾客='{customer_col_name}', 客服='{service_col_name}'")
+
+            quality_points = []
+            relevant_segments = []
+            cs_names = []
+            chat_evaluations = []
+
+            for i in range(len(df)):
+                if (i + 1) % 50 == 0 or i + 1 == len(df):
+                    print(f"正在处理第{i + 1}/{len(df)}行...")
+
+                session = df[chat_col_name].iloc[i]
+                customer = df[customer_col_name].iloc[i]
+                service = df[service_col_name].iloc[i]
+
+                if pd.isna(session) and pd.isna(customer) and pd.isna(service):
+                    quality_points.append("")
+                    relevant_segments.append("")
+                    cs_names.append("")
+                    chat_evaluations.append("")
+                    continue
+
+                hit_points, segments = self.check_quality_points(session, customer, service)
+                cs_name = self.identify_roles(session)
+                evaluation = self.evaluate_chat_record(session, customer, service, hit_points)
+
+                quality_points.append(hit_points)
+                relevant_segments.append(segments)
+                cs_names.append(cs_name)
+                chat_evaluations.append(evaluation)
+
+            # 删除旧结果列
+            for old_col in ["质检点", "命中会话", "客服名称", "客服质检标准"]:
+                if old_col in df.columns:
+                    df.drop(old_col, axis=1, inplace=True)
+
+            # 插入新列（紧跟在C列/客服内容列之后）
+            col_index = df.columns.get_loc(service_col_name) + 1
+            df.insert(col_index, "质检点", quality_points)
+            df.insert(col_index+1, "命中会话", relevant_segments)
+            df.insert(col_index+2, "客服名称", cs_names)
+            df.insert(col_index+3, "客服质检标准", chat_evaluations)
+
+            # 保存文件到桌面（如果不存在则保存到源文件目录）
+            base_name = os.path.basename(file_path)
+            file_name_without_ext = os.path.splitext(base_name)[0]
+            desktop_path = os.path.join(os.path.expanduser("~"), "Desktop")
+            # 如果桌面不存在，使用源文件所在目录
+            if not os.path.exists(desktop_path):
+                desktop_path = os.path.dirname(file_path) if os.path.dirname(file_path) else os.getcwd()
+
+            new_file_name = f"质检结果_{file_name_without_ext}.xlsx"
+            new_file_path = os.path.join(desktop_path, new_file_name)
+
+            counter = 1
+            while os.path.exists(new_file_path):
+                new_file_name = f"质检结果_{file_name_without_ext}({counter}).xlsx"
+                new_file_path = os.path.join(desktop_path, new_file_name)
+                counter += 1
+
+            print(f"正在保存结果到：{new_file_path}")
+            df.to_excel(new_file_path, index=False)
+            print("文件保存成功！")
+            return new_file_path
+
+        except Exception as e:
+            print(f"处理文件时出错：{e}")
+            raise
+
+
+# ========== 对外接口函数 ==========
+
+def run_from_youdao(file_path, chat_col="A", customer_col="B", service_col="C"):
+    """
+    有道云笔记调用的接口函数（三列版本）
+    参数：
+        file_path: Excel文件路径
+        chat_col: 聊天记录列（默认A）
+        customer_col: 顾客内容列（默认B）
+        service_col: 客服内容列（默认C）
+    返回：
+        保存的文件路径
+    """
+    try:
+        inspector = CustomerServiceQualityInspection()
+        result_path = inspector.process_file(file_path, chat_col, customer_col, service_col)
+        return result_path
+    except Exception as e:
+        print(f"处理失败：{str(e)}")
+        raise
+
+
+def main():
+    """命令行入口"""
+    print("\n========== 客服智能质检批处理工具（三列版） ==========\n")
+    print("列格式：A列=完整聊天记录 | B列=顾客发送内容 | C列=客服发送内容\n")
+
+    try:
+        root = tk.Tk()
+        root.withdraw()
+
+        file_path = filedialog.askopenfilename(
+            title="请选择Excel文件",
+            filetypes=[("Excel文件", "*.xlsx;*.xls")],
+            initialdir=r"C:\\Users\\Administrator\\Desktop"
+        )
+
+        if not file_path:
+            print("未选择文件，退出。")
+            return
+
+        if not (file_path.endswith(".xlsx") or file_path.endswith(".xls")):
+            print("错误：请选择Excel格式的文件！")
+            return
+
+        # 询问列名（可选，默认A/B/C）
+        print("默认使用 A列=聊天记录, B列=顾客内容, C列=客服内容")
+        custom = input("是否需要自定义列名？(直接回车使用默认，或输入如：聊天记录,顾客内容,客服内容)：").strip()
+
+        if custom:
+            cols = [c.strip() for c in custom.split(",")]
+            if len(cols) >= 3:
+                chat_col, customer_col, service_col = cols[0], cols[1], cols[2]
+            else:
+                print("输入格式错误，使用默认值A,B,C")
+                chat_col, customer_col, service_col = "A", "B", "C"
+        else:
+            chat_col, customer_col, service_col = "A", "B", "C"
+
+        inspector = CustomerServiceQualityInspection()
+        new_file_path = inspector.process_file(file_path, chat_col, customer_col, service_col)
+
+        print(f"\n✅ 处理完成！结果已保存至：{new_file_path}")
+
+    except Exception as e:
+        print(f"\n❌ 程序运行出错：{e}")
+        import traceback
+        traceback.print_exc()
+
+    finally:
+        input("\n按任意键退出...")
+
+
+if __name__ == "__main__":
+    main()
