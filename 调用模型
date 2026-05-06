@@ -1,0 +1,134 @@
+# pip install requests
+
+import requests
+import json
+import time
+import os
+import mimetypes
+
+from typing import *
+try:
+    from xbot.app.logging import trace as print
+except:
+    from xbot import print
+
+
+def call_coze_bot_with_image(token, bot_id, image_path, text_query):
+    """
+    title: 调用Coze智能体(含图片)
+    description: 通过Coze API上传图片并发送文字信息给指定的智能体 % bot_id %，获取其回复结果。
+    inputs:
+        - token (str): 个人访问令牌 (PAT)，eg: "pat_qLne...Jtslr"
+        - bot_id (str): 智能体ID，eg: "7628057233527865384"
+        - image_path (file): 本地图片文件路径，eg: "C:/images/test.jpg"
+        - text_query (str): 发送给智能体的文字描述，eg: "请描述这张图片的内容"
+    outputs:
+        - bot_response (str): 智能体返回的文本结果，eg: "图片中有一只猫"
+    """
+
+    # 1. 清洗 Token
+    clean_token = token.strip()
+    if clean_token.lower().startswith("bearer "):
+        clean_token = clean_token[7:].strip()
+
+    if not os.path.exists(image_path):
+        raise FileNotFoundError(f"找不到图片文件: {image_path}")
+
+    headers = {
+        "Authorization": f"Bearer {clean_token}",
+        "Content-Type": "application/json"
+    }
+
+    # 定义 API 域名
+    base_urls = ["https://api.coze.cn", "https://api.coze.com"]
+    context = {"successful_base_url": None}
+
+    def _upload_file(file_path):
+        """上传文件并探测域名"""
+        file_name = os.path.basename(file_path)
+        mime_type, _ = mimetypes.guess_type(file_path)
+        mime_type = mime_type or 'application/octet-stream'
+        
+        for url in base_urls:
+            upload_url = f"{url}/v1/files/upload"
+            try:
+                with open(file_path, 'rb') as f:
+                    files = {'file': (file_name, f, mime_type)}
+                    upload_headers = {"Authorization": f"Bearer {clean_token}"}
+                    response = requests.post(upload_url, headers=upload_headers, files=files, timeout=30)
+                
+                if response.status_code == 200:
+                    res_data = response.json()
+                    if res_data.get("code") == 0:
+                        context["successful_base_url"] = url
+                        return res_data["data"]["id"]
+            except:
+                continue
+        raise Exception("图片上传失败，请检查 Token 权限是否包含 'File Management'。")
+
+    def _create_chat(file_id, query):
+        """创建对话"""
+        base_url = context["successful_base_url"]
+        chat_url = f"{base_url}/v3/chat"
+        
+        content_list = [
+            {"type": "text", "text": query},
+            {"type": "image", "file_id": file_id}
+        ]
+        
+        payload = {
+            "bot_id": bot_id,
+            "user_id": f"xbot_{int(time.time())}",
+            "additional_messages": [
+                {
+                    "role": "user",
+                    "content": json.dumps(content_list),
+                    "content_type": "object_string"
+                }
+            ],
+            "stream": False
+        }
+        
+        response = requests.post(chat_url, headers=headers, json=payload, timeout=30)
+        res_data = response.json()
+        
+        if res_data.get("code") != 0:
+            raise Exception(f"发起对话失败: {res_data.get('msg')} (代码: {res_data.get('code')})")
+        
+        data = res_data.get("data")
+        # 修正：Coze V3 使用 conversation_id 而非 thread_id
+        if not data or "id" not in data or "conversation_id" not in data:
+            raise Exception(f"API 响应结构异常，缺少关键 ID。完整响应: {json.dumps(res_data)}")
+            
+        return data["id"], data["conversation_id"]
+
+    def _wait_and_get_result(chat_id, conversation_id):
+        """轮询等待结果"""
+        base_url = context["successful_base_url"]
+        # 修正：URL 参数名使用 conversation_id
+        retrieve_url = f"{base_url}/v3/chat/retrieve?chat_id={chat_id}&conversation_id={conversation_id}"
+        
+        for _ in range(60):
+            res = requests.get(retrieve_url, headers=headers, timeout=10).json()
+            if res.get("code") != 0:
+                raise Exception(f"查询状态失败: {res.get('msg')}")
+            
+            status = res["data"]["status"]
+            if status == "completed":
+                # 获取消息列表
+                msg_url = f"{base_url}/v3/chat/message/list?chat_id={chat_id}&conversation_id={conversation_id}"
+                msg_res = requests.get(msg_url, headers=headers, timeout=10).json()
+                for msg in msg_res.get("data", []):
+                    if msg.get("role") == "assistant" and msg.get("type") == "answer":
+                        return msg.get("content")
+                return "智能体运行完成，但未返回有效回答。"
+            elif status in ["failed", "requires_action", "canceled"]:
+                last_error = res["data"].get("last_error", {})
+                raise Exception(f"智能体运行中断，状态: {status}，详情: {last_error.get('msg', '未知错误')}")
+            time.sleep(1)
+        raise TimeoutError("智能体响应超时。")
+
+    # 执行主流程
+    file_id = _upload_file(image_path)
+    chat_id, conversation_id = _create_chat(file_id, text_query)
+    return _wait_and_get_result(chat_id, conversation_id)
